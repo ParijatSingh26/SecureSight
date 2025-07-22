@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecureSight Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f3f4f6;
+            color: #333;
+        }
+        /* Custom scrollbar for incident list */
+        .incident-list-scroll::-webkit-scrollbar {
+            width: 8px;
+        }
+        .incident-list-scroll::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        .incident-list-scroll::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        .incident-list-scroll::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+        /* Optimistic UI fade out */
+        .incident-item.resolving {
+            opacity: 0;
+            transform: translateX(-20px);
+            transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+        }
+        /* Type icon colors */
+        .type-icon {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+            flex-shrink: 0; /* Prevent shrinking */
+        }
+        .type-icon.unauthorised-access { background-color: #ef4444; /* Red */ }
+        .type-icon.gun-threat { background-color: #f97316; /* Orange */ }
+        .type-icon.face-recognised { background-color: #22c55e; /* Green */ }
+        /* Add more colors for other types if needed */
+        .type-icon.default { background-color: #6b7280; /* Gray */ }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <!-- Initial loading message to confirm HTML is rendering -->
+        <p class="text-center text-gray-500 mt-20">Loading SecureSight Dashboard...</p>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables for Firebase (provided by Canvas environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Initialize Firebase
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        console.log("Script started. Initializing Firebase...");
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            try {
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                console.log("Firebase app, db, auth initialized.");
+
+                // Sign in with custom token or anonymously
+                onAuthStateChanged(auth, async (user) => {
+                    console.log("onAuthStateChanged triggered. User:", user ? user.uid : "null");
+                    if (!user) {
+                        try {
+                            if (initialAuthToken) {
+                                console.log("Attempting signInWithCustomToken...");
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                console.log("Attempting signInAnonymously...");
+                                await signInAnonymously(auth);
+                            }
+                            console.log("Authentication successful.");
+                        } catch (error) {
+                            console.error("Firebase authentication error:", error);
+                        }
+                    }
+                    userId = auth.currentUser?.uid || crypto.randomUUID();
+                    isAuthReady = true;
+                    console.log("Firebase Auth Ready. User ID:", userId);
+                    renderApp(); // Render the app once auth is ready
+                });
+            } catch (error) {
+                console.error("Error during Firebase initialization:", error);
+                console.warn("Firebase initialization failed. Running without Firebase.");
+                userId = crypto.randomUUID(); // Generate a random ID if no auth
+                isAuthReady = true;
+                renderApp(); // Render the app immediately if Firebase init fails
+            }
+        } else {
+            console.warn("Firebase config not provided. Running without Firebase.");
+            userId = crypto.randomUUID(); // Generate a random ID if no auth
+            isAuthReady = true;
+            renderApp(); // Render the app immediately if no Firebase
+        }
+
+        // --- Data Models (TypeScript interfaces for clarity) ---
+        /**
+         * @typedef {object} Camera
+         * @property {string} id
+         * @property {string} name
+         * @property {string} location
+         */
+
+        /**
+         * @typedef {object} Incident
+         * @property {string} id
+         * @property {string} cameraId
+         * @property {string} type
+         * @property {string} tsStart
+         * @property {string} tsEnd
+         * @property {string} thumbnailUrl
+         * @property {boolean} resolved
+         * @property {string} cameraName - Added for display purposes
+         */
+
+        // --- Mock Data (for initial display before API is fully integrated) ---
+        const mockCameras = [
+            { id: 'cam1', name: 'Game Zone 1', location: 'Main Arcade Floor' },
+            { id: 'cam2', name: 'VR Arena', location: 'Virtual Reality Section' },
+            { id: 'cam3', name: 'Esports Stage', location: 'Tournament Area' },
+        ];
+
+        let mockIncidents = [
+            { id: 'inc1', cameraId: 'cam1', type: 'Unauthorised Access', tsStart: '2025-07-22T09:00:00Z', tsEnd: '2025-07-22T09:05:00Z', thumbnailUrl: 'https://placehold.co/300x200/FF0000/FFFFFF?text=Zone+1+Cheating', resolved: false },
+            { id: 'inc2', cameraId: 'cam2', type: 'Gun Threat', tsStart: '2025-07-22T10:15:00Z', tsEnd: '2025-07-22T10:20:00Z', thumbnailUrl: 'https://placehold.co/300x200/0000FF/FFFFFF?text=VR+Arena+Exploit', resolved: false },
+            { id: 'inc3', cameraId: 'cam3', type: 'Face Recognised', tsStart: '2025-07-22T11:30:00Z', tsEnd: '2025-07-22T11:35:00Z', thumbnailUrl: 'https://placehold.co/300x200/00FF00/FFFFFF?text=Esports+AFK+Player', resolved: false },
+            { id: 'inc4', cameraId: 'cam1', type: 'Unauthorised Access', tsStart: '2025-07-22T12:00:00Z', tsEnd: '2025-07-22T12:05:00Z', thumbnailUrl: 'https://placehold.co/300x200/FF0000/FFFFFF?text=Zone+1+Griefing', resolved: false },
+            { id: 'inc5', cameraId: 'cam2', type: 'Gun Threat', tsStart: '2025-07-22T13:10:00Z', tsEnd: '2025-07-22T13:15:00Z', thumbnailUrl: 'https://placehold.co/300x200/0000FF/FFFFFF?text=VR+Arena+Bug', resolved: false },
+            { id: 'inc6', cameraId: 'cam3', type: 'Face Recognised', tsStart: '2025-07-22T14:20:00Z', tsEnd: '2025-07-22T14:25:00Z', thumbnailUrl: 'https://placehold.co/300x200/00FF00/FFFFFF?text=Esports+Known+Player', resolved: true }, // Example resolved
+            { id: 'inc7', cameraId: 'cam1', type: 'Unauthorised Access', tsStart: '2025-07-22T15:00:00Z', tsEnd: '2025-07-22T15:05:00Z', thumbnailUrl: 'https://placehold.co/300x200/FF0000/FFFFFF?text=Zone+1+Illegal+Mod', resolved: false },
+            { id: 'inc8', cameraId: 'cam2', type: 'Gun Threat', tsStart: '2025-07-22T16:10:00Z', tsEnd: '2025-07-22T16:15:00Z', thumbnailUrl: 'https://placehold.co/300x200/0000FF/FFFFFF?text=VR+Arena+Disruption', resolved: false },
+            { id: 'inc9', cameraId: 'cam3', type: 'Face Recognised', tsStart: '2025-07-22T17:20:00Z', tsEnd: '2025-07-22T17:25:00Z', thumbnailUrl: 'https://placehold.co/300x200/00FF00/FFFFFF?text=Esports+New+Player', resolved: false },
+            { id: 'inc10', cameraId: 'cam1', type: 'Unauthorised Access', tsStart: '2025-07-22T18:00:00Z', tsEnd: '2025-07-22T18:05:00Z', thumbnailUrl: 'https://placehold.co/300x200/FF0000/FFFFFF?text=Zone+1+Account+Sharing', resolved: false },
+            { id: 'inc11', cameraId: 'cam2', type: 'Gun Threat', tsStart: '2025-07-22T19:10:00Z', tsEnd: '2025-07-22T19:15:00Z', thumbnailUrl: 'https://placehold.co/300x200/0000FF/FFFFFF?text=VR+Arena+Exploit+2', resolved: false },
+            { id: 'inc12', cameraId: 'cam3', type: 'Face Recognised', tsStart: '2025-07-22T20:20:00Z', tsEnd: '2025-07-22T20:25:00Z', thumbnailUrl: 'https://placehold.co/300x200/00FF00/FFFFFF?text=Esports+Spectator+Issue', resolved: false },
+        ];
+
+        // Augment incidents with camera names
+        mockIncidents = mockIncidents.map(incident => {
+            const camera = mockCameras.find(cam => cam.id === incident.cameraId);
+            return { ...incident, cameraName: camera ? camera.name : 'Unknown Camera' };
+        });
+
+        // Sort mock incidents by tsStart (newest first)
+        mockIncidents.sort((a, b) => new Date(b.tsStart).getTime() - new Date(a.tsStart).getTime());
+
+        // --- State Management ---
+        let currentIncidents = [];
+        let selectedIncident = null;
+        let messageBoxTimeout = null;
+
+        // --- UI Elements ---
+        let navbarEl, incidentPlayerEl, incidentListEl, messageBoxEl;
+
+        /**
+         * Returns a CSS class for the incident type icon based on the incident type.
+         * @param {string} type - The incident type string.
+         * @returns {string} - The CSS class name.
+         */
+        function getTypeIconClass(type) {
+            switch (type) {
+                case 'Unauthorised Access': return 'unauthorised-access';
+                case 'Gun Threat': return 'gun-threat';
+                case 'Face Recognised': return 'face-recognised';
+                default: return 'default';
+            }
+        }
+
+        /**
+         * Displays a message box with a given message.
+         * @param {string} message - The message to display.
+         * @param {string} type - 'success' or 'error' for styling.
+         */
+        function showMessageBox(message, type = 'info') {
+            console.log(`Showing message: ${message} (Type: ${type})`);
+            if (!messageBoxEl) {
+                messageBoxEl = document.createElement('div');
+                messageBoxEl.className = 'fixed bottom-4 right-4 p-4 rounded-lg shadow-lg text-white z-50 transition-all duration-300 transform translate-y-full opacity-0';
+                document.body.appendChild(messageBoxEl);
+            }
+
+            messageBoxEl.textContent = message;
+            messageBoxEl.className = messageBoxEl.className.replace(/bg-(green|red|blue)-\d{3}/g, ''); // Clear previous color
+            if (type === 'success') {
+                messageBoxEl.classList.add('bg-green-500');
+            } else if (type === 'error') {
+                messageBoxEl.classList.add('bg-red-500');
+            } else {
+                messageBoxEl.classList.add('bg-blue-500');
+            }
+
+            // Show animation
+            messageBoxEl.classList.remove('translate-y-full', 'opacity-0');
+            messageBoxEl.classList.add('translate-y-0', 'opacity-100');
+
+            if (messageBoxTimeout) {
+                clearTimeout(messageBoxTimeout);
+            }
+            messageBoxTimeout = setTimeout(() => {
+                // Hide animation
+                messageBoxEl.classList.remove('translate-y-0', 'opacity-100');
+                messageBoxEl.classList.add('translate-y-full', 'opacity-0');
+            }, 3000);
+        }
+
+        /**
+         * Fetches incidents from Firestore or mock data.
+         * @returns {Promise<Incident[]>}
+         */
+        async function fetchIncidents() {
+            console.log("fetchIncidents called.");
+            if (!isAuthReady) {
+                console.log("Auth not ready, waiting to fetch incidents.");
+                return [];
+            }
+
+            if (db && userId) {
+                try {
+                    console.log("Attempting to fetch incidents from Firestore...");
+                    const incidentsColRef = collection(db, `artifacts/${appId}/public/data/incidents`);
+                    const q = query(incidentsColRef);
+                    const querySnapshot = await getDocs(q);
+                    const incidents = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    console.log(`Fetched ${incidents.length} incidents from Firestore.`);
+
+                    const unresolvedIncidents = incidents.filter(inc => !inc.resolved);
+                    unresolvedIncidents.sort((a, b) => new Date(b.tsStart).getTime() - new Date(a.tsStart).getTime());
+                    console.log(`Found ${unresolvedIncidents.length} unresolved incidents after filtering.`);
+
+                    return unresolvedIncidents.map(incident => {
+                        const camera = mockCameras.find(cam => cam.id === incident.cameraId);
+                        return { ...incident, cameraName: camera ? camera.name : 'Unknown Camera' };
+                    });
+
+                } catch (error) {
+                    console.error("Error fetching incidents from Firestore:", error);
+                    showMessageBox("Error fetching incidents. Using mock data.", "error");
+                    return mockIncidents.filter(inc => !inc.resolved); // Fallback to mock data
+                }
+            } else {
+                console.log("Firestore not initialized or userId not available. Using mock data for incidents.");
+                return mockIncidents.filter(inc => !inc.resolved);
+            }
+        }
+
+        /**
+         * Marks an incident as resolved in Firestore or mock data.
+         * @param {string} incidentId - The ID of the incident to resolve.
+         * @param {HTMLElement} incidentItemEl - The DOM element of the incident item for optimistic UI.
+         */
+        async function resolveIncident(incidentId, incidentItemEl) {
+            console.log(`Attempting to resolve incident: ${incidentId}`);
+            if (!isAuthReady) {
+                showMessageBox("Authentication not ready. Cannot resolve incident.", "error");
+                return;
+            }
+
+            // Optimistic UI: Immediately start fade out
+            if (incidentItemEl) {
+                incidentItemEl.classList.add('resolving');
+                // Disable buttons/interactions while resolving
+                incidentItemEl.style.pointerEvents = 'none';
+            }
+
+            if (db && userId) {
+                try {
+                    console.log(`Updating incident ${incidentId} in Firestore...`);
+                    const incidentDocRef = doc(db, `artifacts/${appId}/public/data/incidents`, incidentId);
+                    await updateDoc(incidentDocRef, { resolved: true });
+                    showMessageBox(`Incident ${incidentId} resolved successfully!`, "success");
+                    // The onSnapshot listener will handle re-rendering the list, removing the item
+                } catch (error) {
+                    console.error("Error resolving incident in Firestore:", error);
+                    showMessageBox("Error resolving incident.", "error");
+                    // Revert optimistic UI if API fails
+                    if (incidentItemEl) {
+                        incidentItemEl.classList.remove('resolving');
+                        incidentItemEl.style.pointerEvents = 'auto';
+                    }
+                }
+            } else {
+                // Update mock data
+                mockIncidents = mockIncidents.map(inc =>
+                    inc.id === incidentId ? { ...inc, resolved: true } : inc
+                );
+                showMessageBox(`Incident ${incidentId} resolved (mock data)!`, "success");
+                renderIncidentList(); // Re-render for mock data scenario
+            }
+        }
+
+        /**
+         * Renders the Navbar component.
+         */
+        function renderNavbar() {
+            console.log("renderNavbar called.");
+            navbarEl.innerHTML = `
+                <div class="container mx-auto px-4 py-4 flex justify-between items-center">
+                    <h1 class="text-2xl font-bold text-white">SecureSight Dashboard</h1>
+                    <div class="text-white text-sm">
+                        User ID: <span class="font-mono text-yellow-300">${userId || 'Loading...'}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Renders the Incident Player component.
+         * @param {Incident | null} incident - The incident to display in the player.
+         */
+        function renderIncidentPlayer(incident) {
+            console.log("renderIncidentPlayer called. Incident:", incident ? incident.id : "none");
+
+            // Default video URL (you can replace this with a more suitable placeholder)
+            // Using a generic public domain video. For actual game incidents,
+            // you would stream real video feeds.
+            const defaultVideoUrl = "https://www.w3schools.com/html/mov_bbb.mp4";
+            // Fallback image for main player if video fails or for initial state
+            const fallbackImageUrl = "https://placehold.co/600x400/333333/FFFFFF?text=No+Video+Feed";
+
+            const mainContent = incident
+                ? `
+                <video controls autoplay loop muted class="w-full h-auto rounded-lg shadow-md mb-4 object-cover"
+                       poster="${incident.thumbnailUrl}" onerror="this.onerror=null;this.src='${fallbackImageUrl}';">
+                    <source src="${defaultVideoUrl}" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+                <div class="text-lg font-semibold text-gray-800">${incident.type} at ${incident.cameraName}</div>
+                <div class="text-sm text-gray-600">
+                    ${new Date(incident.tsStart).toLocaleString()} - ${new Date(incident.tsEnd).toLocaleString()}
+                </div>
+            `
+                : `
+                <div class="flex flex-col items-center justify-center h-full bg-gray-100 rounded-lg text-gray-500">
+                    <video controls autoplay loop muted class="w-full h-auto rounded-lg shadow-md mb-4 object-cover"
+                           poster="${fallbackImageUrl}" onerror="this.onerror=null;this.src='${fallbackImageUrl}';">
+                        <source src="${defaultVideoUrl}" type="video/mp4">
+                        Your browser does not support the video tag.
+                    </video>
+                    <p class="text-lg">No incident selected</p>
+                    <p class="text-sm">Click an incident from the list to view details.</p>
+                </div>
+            `;
+
+            incidentPlayerEl.innerHTML = `
+                <div class="bg-white p-6 rounded-lg shadow-lg h-full flex flex-col">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-800">Incident Player</h2>
+                    <div class="flex-grow flex items-center justify-center bg-gray-50 rounded-lg p-4 mb-6">
+                        ${mainContent}
+                    </div>
+                    <div class="flex justify-around gap-4">
+                        <img src="https://placehold.co/150x100/CCCCCC/333333?text=Arcade+Cam" alt="Arcade Camera Thumbnail" class="w-1/2 h-auto rounded-md shadow-sm object-cover">
+                        <img src="https://placehold.co/150x100/BBBBBB/333333?text=VR+Cam" alt="VR Camera Thumbnail" class="w-1/2 h-auto rounded-md shadow-sm object-cover">
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Renders the Incident List component.
+         */
+        async function renderIncidentList() {
+            console.log("renderIncidentList called.");
+            currentIncidents = await fetchIncidents();
+            console.log(`Rendering ${currentIncidents.length} unresolved incidents.`);
+            incidentListEl.innerHTML = `
+                <div class="bg-white p-6 rounded-lg shadow-lg h-full flex flex-col">
+                    <h2 class="text-xl font-semibold mb-4 text-gray-800">Incident List (${currentIncidents.length} Unresolved)</h2>
+                    <div class="flex-grow overflow-y-auto incident-list-scroll pr-2">
+                        ${currentIncidents.length > 0 ?
+                            currentIncidents.map(incident => `
+                                <div class="incident-item bg-gray-50 p-4 mb-3 rounded-lg shadow-sm border border-gray-200 flex items-center justify-between cursor-pointer hover:bg-gray-100 transition-colors"
+                                     data-incident-id="${incident.id}">
+                                    <div class="flex items-center">
+                                        <img src="${incident.thumbnailUrl}" alt="Thumbnail" class="w-20 h-16 rounded-md object-cover mr-4">
+                                        <div>
+                                            <div class="font-medium text-gray-900 flex items-center">
+                                                <span class="type-icon ${getTypeIconClass(incident.type)}"></span>
+                                                ${incident.type}
+                                            </div>
+                                            <div class="text-sm text-gray-600">${incident.cameraName}</div>
+                                            <div class="text-xs text-gray-500">
+                                                ${new Date(incident.tsStart).toLocaleString()} - ${new Date(incident.tsEnd).toLocaleString()}
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button class="resolve-btn bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full shadow-md transition-transform transform hover:scale-105"
+                                            data-incident-id="${incident.id}">
+                                        Resolve
+                                    </button>
+                                </div>
+                            `).join('')
+                            : '<p class="text-gray-500 text-center py-10">No unresolved incidents.</p>'
+                        }
+                    </div>
+                </div>
+            `;
+
+            // Add event listeners for selecting incidents and resolving them
+            incidentListEl.querySelectorAll('[data-incident-id]').forEach(item => {
+                item.addEventListener('click', (event) => {
+                    // Only select if not clicking the resolve button
+                    if (!event.target.classList.contains('resolve-btn')) {
+                        const id = item.dataset.incidentId;
+                        selectedIncident = currentIncidents.find(inc => inc.id === id);
+                        renderIncidentPlayer(selectedIncident);
+                    }
+                });
+            });
+
+            incidentListEl.querySelectorAll('.resolve-btn').forEach(button => {
+                button.addEventListener('click', (event) => {
+                    event.stopPropagation(); // Prevent incident selection when resolving
+                    const id = button.dataset.incidentId;
+                    const incidentItemEl = button.closest('.incident-item'); // Get the parent incident item element
+                    resolveIncident(id, incidentItemEl);
+                });
+            });
+        }
+
+        /**
+         * Main render function to initialize and update the UI.
+         */
+        async function renderApp() {
+            console.log("renderApp called.");
+            const root = document.getElementById('root');
+            if (!root) {
+                console.error("Error: #root element not found!");
+                return; // Cannot render without the root element
+            }
+
+            try {
+                root.innerHTML = `
+                    <nav class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white shadow-lg" id="navbar"></nav>
+                    <main class="container mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-3 gap-8 h-[calc(100vh-80px)]">
+                        <section class="lg:col-span-2" id="incident-player"></section>
+                        <section class="lg:col-span-1" id="incident-list"></section>
+                    </main>
+                `;
+
+                navbarEl = document.getElementById('navbar');
+                incidentPlayerEl = document.getElementById('incident-player');
+                incidentListEl = document.getElementById('incident-list');
+
+                if (!navbarEl || !incidentPlayerEl || !incidentListEl) {
+                    console.error("Error: One or more main UI elements not found after initial renderApp innerHTML assignment.");
+                    return;
+                }
+
+                renderNavbar();
+                renderIncidentPlayer(null); // Initialize with no selected incident
+                await renderIncidentList(); // Use await as it fetches data
+
+                // Set up Firestore listener for real-time updates IF Firebase is initialized
+                if (db && userId) {
+                    console.log("Setting up Firestore real-time listener...");
+                    const incidentsColRef = collection(db, `artifacts/${appId}/public/data/incidents`);
+                    onSnapshot(incidentsColRef, (snapshot) => {
+                        if (!isAuthReady) {
+                            console.log("Firestore snapshot received but auth not ready, skipping update.");
+                            return; // Ensure auth is ready before processing snapshot
+                        }
+                        console.log("Firestore snapshot received, updating incident list.");
+                        renderIncidentList(); // Re-render list on any change
+                    }, (error) => {
+                        console.error("Error listening to Firestore incidents:", error);
+                        showMessageBox("Real-time updates failed. Please refresh.", "error");
+                    });
+                }
+            } catch (error) {
+                console.error("Error during renderApp execution:", error);
+                root.innerHTML = `<p class="text-center text-red-500 mt-20">An error occurred while loading the dashboard. Please check the console for details.</p>`;
+            }
+        }
+
+        // Start the application after the window loads
+        window.onload = renderApp;
+        console.log("window.onload event listener set.");
+    </script>
+</body>
+</html>
